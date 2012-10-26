@@ -5,10 +5,13 @@
             [korma.sql.utils :as utils]
             [clojure.set :as set]
             [korma.db :as db])
-  (:use [korma.sql.engine :only [bind-query bind-params]]))
+  (:use [korma.sql.engine :only [bind-query bind-params]]
+        korma.validation))
 
 (def ^{:dynamic true} *exec-mode* false)
-(declare get-rel)
+(def ^{:dynamic true} *pg-schema* nil)
+(def ^{:dynamic true} *schema* nil)
+(declare get-rel set-pg-schema save insert-or-update-with-rels)
 
 ;;*****************************************************
 ;; Query types
@@ -37,53 +40,57 @@
   "Create an empty select query. Ent can either be an entity defined by defentity,
   or a string of the table name"
   [ent]
-  (if (:type ent)
-    ent
-    (let [q (empty-query ent)]
-      (merge q {:type :select
-                :fields [::*]
-                :from [(:ent q)]
-                :modifiers []
-                :joins []
-                :where []
-                :order []
-                :aliases #{}
-                :group []
-                :results :results}))))
+  (let [ent (set-pg-schema ent)]
+    (if (:type ent)
+      ent
+      (let [q (empty-query ent)]
+        (merge q {:type :select
+                  :fields [::*]
+                  :from [(:ent q)]
+                  :modifiers []
+                  :joins []
+                  :where []
+                  :order []
+                  :aliases #{}
+                  :group []
+                  :results :results})))))
 
 (defn update*
   "Create an empty update query. Ent can either be an entity defined by defentity,
   or a string of the table name."
   [ent]
-  (if (:type ent)
-    ent
-    (let [q (empty-query ent)]
-      (merge q {:type :update
-                :fields {}
-                :where []
-                :results :keys}))))
+  (let [ent (set-pg-schema ent)]
+    (if (:type ent)
+      ent
+      (let [q (empty-query ent)]
+        (merge q {:type :update
+                  :fields {}
+                  :where []
+                  :results :keys})))))
 
 (defn delete*
   "Create an empty delete query. Ent can either be an entity defined by defentity,
   or a string of the table name"
   [ent]
-  (if (:type ent)
-    ent
-    (let [q (empty-query ent)]
-      (merge q {:type :delete
-                :where []
-                :results :keys}))))
+  (let [ent (set-pg-schema ent)]
+    (if (:type ent)
+      ent
+      (let [q (empty-query ent)]
+        (merge q {:type :delete
+                  :where []
+                  :results :keys})))))
 
 (defn insert*
   "Create an empty insert query. Ent can either be an entity defined by defentity,
   or a string of the table name"
   [ent]
-  (if (:type ent)
-    ent
-    (let [q (empty-query ent)]
-      (merge q {:type :insert
-                :values []
-                :results :keys}))))
+  (let [ent (set-pg-schema ent)]
+    (if (:type ent)
+      ent
+      (let [q (empty-query ent)]
+        (merge q {:type :insert
+                  :values []
+                  :results :keys})))))
 
 ;;*****************************************************
 ;; Query macros
@@ -413,6 +420,8 @@
    :name table
    :pk :id
    :db nil
+   :constraints {}
+   :indexes []
    :transforms '()
    :prepares '()
    :fields []
@@ -421,25 +430,49 @@
 (defn create-relation
   "Create a relation map describing how two entities are related."
   [ent sub-ent type opts]
-  (let [[pk fk foreign-ent] (condp = type
-                              :has-one [(raw (eng/prefix ent (:pk ent)))
-                                        (raw (eng/prefix sub-ent (keyword (str (:table ent) "_id"))))
-                                        sub-ent]
-                              :belongs-to [(raw (eng/prefix sub-ent (:pk sub-ent)))
-                                           (raw (eng/prefix ent (keyword (str (:table sub-ent) "_id"))))
-                                           ent]
-                              :has-many [(raw (eng/prefix ent (:pk ent)))
-                                         (raw (eng/prefix sub-ent (keyword (str (:table ent) "_id"))))
-                                         sub-ent])
-        opts (when (:fk opts)
-               {:fk (raw (eng/prefix foreign-ent (:fk opts)))})]
-    (merge {:ent sub-ent
-            :table (:table sub-ent)
-            :alias (:alias sub-ent)
-            :rel-type type
-            :pk pk
-            :fk fk}
-           opts)))
+  (cond
+   (#{:has-many-to-many :belongs-to-many-to-many} type)
+   (let [d-fk (keyword (str (:table ent) "_id"))
+         d-sub-fk (keyword (str (:table sub-ent) "_id"))
+         d-map-table (condp = type
+                       :has-many-to-many (str (:table ent) "2" (:table sub-ent))
+                       :belongs-to-many-to-many (str (:table sub-ent) "2" (:table ent)))
+         opts (merge {:fk d-fk
+                      :sub-fk d-sub-fk
+                      :map-table d-map-table}
+                     opts)
+         [pk fk sub-pk sub-fk] [(raw (eng/prefix ent (:pk ent)))
+                                (raw (eng/prefix (name (:map-table opts)) (:fk opts)))
+                                (raw (eng/prefix sub-ent (:pk ent)))
+                                (raw (eng/prefix (name (:map-table opts)) (:sub-fk opts)))]]
+     {:table (:table sub-ent)
+      :alias (:alias sub-ent)
+      :ent sub-ent
+      :rel-type type
+      :pk pk
+      :sub-pk sub-pk
+      :fk fk
+      :sub-fk sub-fk
+      :map-table (:map-table opts)})
+   :else (let [[pk fk foreign-ent] (condp = type
+                                     :has-one [(raw (eng/prefix ent (:pk ent)))
+                                               (raw (eng/prefix sub-ent (keyword (str (:table ent) "_id"))))
+                                               sub-ent]
+                                     :belongs-to [(raw (eng/prefix sub-ent (:pk sub-ent)))
+                                                  (raw (eng/prefix ent (keyword (str (:table sub-ent) "_id"))))
+                                                  ent]
+                                     :has-many [(raw (eng/prefix ent (:pk ent)))
+                                                (raw (eng/prefix sub-ent (keyword (str (:table ent) "_id"))))
+                                                sub-ent])
+               opts (when (:fk opts)
+                      {:fk (raw (eng/prefix foreign-ent (:fk opts)))})]
+           (merge {:ent sub-ent
+                   :table (:table sub-ent)
+                   :alias (:alias sub-ent)
+                   :rel-type type
+                   :pk pk
+                   :fk fk}
+                  opts))))
 
 (defn rel
   [ent sub-ent type opts]
@@ -511,6 +544,32 @@
   (let [sub-ent (prepare-sub-entity sub-ent)]
     `(rel ~ent ~sub-ent :has-many ~opts)))
 
+(defmacro has-many-to-many
+  "Adds a many-many relation for given entity. It is assumed that mapping table
+  exists between entity and sub-entity with name entity2sub-entity: user2email
+  and this table has columns table_id and sub-ent-table_id: user_id, email_id.
+  Opts can include a key for :fk to explicitly set the entity foreign key in
+  mapping table, a key :sub-fk to explicitly set the sub-entity foreign key in mapping
+  table and finally also a key :map-table to explicity set the name of mapping table.
+
+  (has-many-many users email {:fk :userID :sub-fk :emailID :map-table 'users2emails'})"
+  [ent sub-ent & [opts]]
+  (let [sub-ent (prepare-sub-entity sub-ent)]
+    `(rel ~ent ~sub-ent :has-many-to-many ~opts)))
+
+(defmacro belongs-to-many-to-many
+  "Adds a many-many relation for given entity. It is assumed that mapping table
+  exists between entity and sub-entity with name sub-entity2entity: email2user
+  and this table has columns table_id and sub-ent-table_id: user_id, email_id.
+  Opts can include a key for :fk to explicitly set the entity foreign key in
+  mapping table, a key :sub-fk to explicitly set the sub-entity foreign key in mapping
+  table and finally also a key :map-table to explicity set the name of mapping table.
+
+  (has-many-many users email {:fk :userID :sub-fk :emailID :map-table 'emails2users'})"
+  [ent sub-ent & [opts]]
+  (let [sub-ent (prepare-sub-entity sub-ent)]
+    `(rel ~ent ~sub-ent :belongs-to-many-to-many ~opts)))
+
 (defn entity-fields
   "Set the fields to be retrieved by default in select queries for the
   entity."
@@ -552,6 +611,15 @@
   [ent func]
   (update-in ent [:prepares] conj func))
 
+(defn nest
+  "Add "
+  [ent & rels]
+  (update-in ent
+             [:accepted-rels]
+             concat (map (fn [x] (cond
+                                 (map? x) (:name x)
+                                 (keyword? x) (name x))) rels)))
+
 (defmacro defentity
   "Define an entity representing a table in the database, applying any modifications in
   the body."
@@ -591,31 +659,63 @@
                  (update-in [:group] #(force-prefix sub-ent %)))]
     (merge-query query neue)))
 
-(defn- with-later [rel query ent func]
+(defn- with-many [rel query ent func rel-name]
   (let [fk (:fk rel)
         pk (get-in query [:ent :pk])
         table (keyword (eng/table-alias ent))]
     (post-query query
                 (partial map
-                         #(assoc % table
+                         #(assoc % rel-name
                                  (select ent
                                          (func)
                                          (where {fk (get % pk)})))))))
 
-(defn- with-now [rel query ent func]
-  (let [table (if (:alias rel)
-                [(:table ent) (:alias ent)]
-                (:table ent))
-        query (join query table (= (:pk rel) (:fk rel)))]
-    (sub-query query ent func)))
+(defn- extract-field-keyword
+  "Extracts the field keyword from a generated field name.  This method is
+   broken in that it will only work with the default naming strategy.
+   Fortunately, we're using the default naming strategy."
+  [field]
+  (let [{:keys [delimiters]} (or eng/*bound-options* @korma.config/options)
+        [begin end] delimiters
+        quoted-name (last (clojure.string/split (get field :korma.sql.utils/generated) #"[.]"))
+        regex (re-pattern (str "^" begin "|" end "$"))]
+    (keyword (clojure.string/replace quoted-name regex ""))))
+
+(defn- with-many-to-many [rel query ent func rel-name]
+  (let [fk (:fk rel)
+        pk (get-in query [:ent :pk])
+        table (keyword (eng/table-alias ent))]
+    (post-query query
+                (partial map
+                         #(assoc % rel-name
+                                 (select ent
+                                         (join :inner (:map-table rel) (= (:sub-pk rel) (:sub-fk rel)))
+                                         (func)
+                                         (where {fk (get % pk)})))))))
+
+(defn- with-direct
+  [rel query ent func rel-name]
+  (let  [fk (extract-field-keyword (:fk rel))
+         pk (:pk rel)
+         table (keyword (eng/table-alias ent))]
+    (post-query (fields query fk)
+                (partial map
+                         #(dissoc (assoc % rel-name
+                                         (first (select ent
+                                                        (func)
+                                                        (where {pk (get % fk)})))) fk)))))
 
 (defn with* [query sub-ent func]
   (let [rel (get-rel (:ent query) sub-ent)
+        rel-name (if (map? sub-ent)
+                   (keyword (:name sub-ent))
+                   sub-ent)
         sub-ent (:ent rel)]
     (cond
      (not rel) (throw (Exception. (str "No relationship defined for table: " (:table sub-ent))))
-     (#{:has-one :belongs-to} (:rel-type rel)) (with-now rel query sub-ent func)
-     :else (with-later rel query sub-ent func))))
+     (#{:has-one :belongs-to} (:rel-type rel)) (with-direct rel query sub-ent func rel-name)
+     (#{:has-many-to-many :belongs-to-many-to-many} (:rel-type rel)) (with-many-to-many rel query sub-ent func rel-name)
+     :else (with-many rel query sub-ent func rel-name))))
 
 (defmacro with
   "Add a related entity to the given select query. If the entity has a relationship
@@ -644,3 +744,108 @@
   `(with* ~query ~ent (fn [q#]
                         (-> q#
                             ~@body))))
+
+;;*****************************************************
+;; Postgres Schemas
+;;*****************************************************
+
+(defn- set-pg-schema
+  "Creates a entity with proper table name in a postgres schema"
+  [{tb :table sc :schema :as ent}]
+  (let [schema (if *pg-schema* *pg-schema* sc)]
+    (table ent (if schema (keyword (str (name schema) "." tb)) tb))))
+
+(defn pg-schema [ent schema]
+  (assoc ent :schema schema))
+
+(defmacro with-pg-schema
+  "Binds postgres schema for tables in this scope."
+  [schema & body]
+  `(binding [*pg-schema* ~schema]
+     ~@body))
+
+;;*****************************************************
+;; Other
+;;*****************************************************
+
+(defn page
+  "Limits the query's result for a given page and page-size"
+  [query page page-size]
+  (-> query
+      (limit page-size)
+      (offset (* page page-size))))
+
+(defn- get-key
+  [rel k]
+  (keyword (last (clojure.string/split
+                  (val (first (k rel))) #"\""))))
+
+(defn rel-values
+  [rel]
+  [(get-key rel :pk) (get-key rel :fk) (:ent rel)])
+
+(defn- insert-or-update-many-rels
+  [many-rels rels-map]
+  (doseq [[k rel] many-rels]
+    (let [[pk fk ent] (rel-values rel)]
+      (doseq [record (map (fn [val] (assoc val fk (pk rels-map))) (rels-map k))]
+        (insert-or-update-with-rels ent record)))))
+
+(defn- insert-or-update-one-rels
+  [one-rels rels-map]
+  (if one-rels
+    (reduce
+     (fn [value [k v]]
+       (assoc value k v))
+     rels-map
+     (map (fn [[k rel]]
+            (let [[pk fk ent] (rel-values rel)
+                  id (pk (insert-or-update-with-rels ent (rels-map k)))]
+              [fk id]))
+          one-rels))
+    rels-map))
+
+(defn- get-rels
+  [{:keys [rel]} type]
+  (reduce
+   (fn [rels [k v]]
+     (if (= (:rel-type @(rel k)) type)
+       (assoc rels (keyword k) @v)
+       rels))
+   {}
+   rel))
+
+(defn insert-or-update-with-rels
+  "Inserts a single value with its relationships."
+  [{id :pk rel :rel :as ent} record]
+  (let [many-rels  (get-rels ent :has-many)
+        one-rels   (get-rels ent :belongs-to)
+        query      (if (id record)
+                     #(update ent (set-fields %) (where {id (id %)}))
+                     #(insert ent (values %)))
+        rels-keys  (concat (keys many-rels) (keys one-rels))
+        new-record (query
+                    (apply dissoc
+                           (insert-or-update-one-rels one-rels record)
+                           rels-keys))]
+    (insert-or-update-many-rels many-rels
+                                (assoc record id (id new-record)))
+    new-record))
+
+(defn save
+  "Inserts a single value including its relationships.
+   Returns a vector like [valid? output], with valid? true if validation is passed else false,
+   and output with the returned record from the insert if valid, else a map with errors."
+  [ent record]
+  (if-let [errors (get-errors ent record)]
+    [false errors]
+    [true (insert-or-update-with-rels ent record)]))
+
+(defn create
+  [ent [rec & recs]]
+  (korma.db/transaction
+   (if recs
+     (let [[valid?] (save ent rec)]
+       (if valid?
+         (create recs)
+         (korma.db/rollback))))))
