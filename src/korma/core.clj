@@ -687,11 +687,13 @@
         table (keyword (eng/table-alias ent))]
     (post-query query
                 (partial map
-                         #(assoc % rel-name
-                                 (select ent
-                                         (join :inner (:map-table rel) (= (:sub-pk rel) (:sub-fk rel)))
-                                         (func)
-                                         (where {fk (get % pk)})))))))
+                         (let [pg-schema *pg-schema*]
+                           #(binding [*pg-schema* pg-schema]
+                              (assoc % rel-name
+                                     (select ent
+                                             (join :inner (:map-table rel) (= (:sub-pk rel) (:sub-fk rel)))
+                                             (func)
+                                             (where {fk (get % pk)})))))))))
 
 (defn- with-direct
   [rel query ent func rel-name]
@@ -700,10 +702,12 @@
          table (keyword (eng/table-alias ent))]
     (post-query (fields query fk)
                 (partial map
-                         #(dissoc (assoc % rel-name
-                                         (first (select ent
-                                                        (func)
-                                                        (where {pk (get % fk)})))) fk)))))
+                         (let [pg-schema *pg-schema*]
+                           #(binding [*pg-schema* pg-schema]
+                              (dissoc (assoc % rel-name
+                                             (first (select ent
+                                                            (func)
+                                                            (where {pk (get % fk)})))) fk)))))))
 
 (defn with* [query sub-ent func]
   (let [rel (get-rel (:ent query) sub-ent)
