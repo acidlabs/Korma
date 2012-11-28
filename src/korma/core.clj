@@ -9,9 +9,7 @@
         korma.validation))
 
 (def ^{:dynamic true} *exec-mode* false)
-(def ^{:dynamic true} *pg-schema* nil)
-(def ^{:dynamic true} *schema* nil)
-(declare get-rel set-pg-schema save insert-or-update-with-rels)
+(declare get-rel save insert-or-update-with-rels)
 
 ;;*****************************************************
 ;; Query types
@@ -40,57 +38,55 @@
   "Create an empty select query. Ent can either be an entity defined by defentity,
   or a string of the table name"
   [ent]
-  (let [ent (set-pg-schema ent)]
-    (if (:type ent)
-      ent
-      (let [q (empty-query ent)]
-        (merge q {:type :select
-                  :fields [::*]
-                  :from [(:ent q)]
-                  :modifiers []
-                  :joins []
-                  :where []
-                  :order []
-                  :aliases #{}
-                  :group []
-                  :results :results})))))
+  (if (:type ent)
+    ent
+    (let [q (empty-query ent)]
+      (merge q {:type :select
+                :fields (if (or (not (map? ent)) (empty? (:fields ent)))
+                          [::*]
+                          (conj (:fields ent) (:pk ent)))
+                :from [(:ent q)]
+                :modifiers []
+                :joins []
+                :where []
+                :order []
+                :aliases #{}
+                :group []
+                :results :results}))))
 
 (defn update*
   "Create an empty update query. Ent can either be an entity defined by defentity,
   or a string of the table name."
   [ent]
-  (let [ent (set-pg-schema ent)]
-    (if (:type ent)
-      ent
-      (let [q (empty-query ent)]
-        (merge q {:type :update
-                  :fields {}
-                  :where []
-                  :results :keys})))))
+  (if (:type ent)
+    ent
+    (let [q (empty-query ent)]
+      (merge q {:type :update
+                :fields {}
+                :where []
+                :results :keys}))))
 
 (defn delete*
   "Create an empty delete query. Ent can either be an entity defined by defentity,
   or a string of the table name"
   [ent]
-  (let [ent (set-pg-schema ent)]
-    (if (:type ent)
-      ent
-      (let [q (empty-query ent)]
-        (merge q {:type :delete
-                  :where []
-                  :results :keys})))))
+  (if (:type ent)
+    ent
+    (let [q (empty-query ent)]
+      (merge q {:type :delete
+                :where []
+                :results :keys}))))
 
 (defn insert*
   "Create an empty insert query. Ent can either be an entity defined by defentity,
   or a string of the table name"
   [ent]
-  (let [ent (set-pg-schema ent)]
-    (if (:type ent)
-      ent
-      (let [q (empty-query ent)]
-        (merge q {:type :insert
-                  :values []
-                  :results :keys})))))
+  (if (:type ent)
+    ent
+    (let [q (empty-query ent)]
+      (merge q {:type :insert
+                :values []
+                :results :keys}))))
 
 ;;*****************************************************
 ;; Query macros
@@ -687,27 +683,24 @@
         table (keyword (eng/table-alias ent))]
     (post-query query
                 (partial map
-                         (let [pg-schema *pg-schema*]
-                           #(binding [*pg-schema* pg-schema]
-                              (assoc % rel-name
-                                     (select ent
-                                             (join :inner (:map-table rel) (= (:sub-pk rel) (:sub-fk rel)))
-                                             (func)
-                                             (where {fk (get % pk)})))))))))
+                         #(assoc % rel-name
+                                 (select ent
+                                         (join :inner (:map-table rel) (= (:sub-pk rel) (:sub-fk rel)))
+                                         (func)
+                                         (where {fk (get % pk)})))))))
 
 (defn- with-direct
   [rel query ent func rel-name]
   (let  [fk (extract-field-keyword (:fk rel))
-         pk (:pk rel)
-         table (keyword (eng/table-alias ent))]
+         pk (:pk rel)]
     (post-query (fields query fk)
                 (partial map
-                         (let [pg-schema *pg-schema*]
-                           #(binding [*pg-schema* pg-schema]
-                              (dissoc (assoc % rel-name
-                                             (first (select ent
-                                                            (func)
-                                                            (where {pk (get % fk)})))) fk)))))))
+                         #(dissoc (assoc % rel-name
+                                         (first (select ent
+                                                        (func)
+                                                        (where {pk (get % fk)}))))
+                                  fk
+                                  (dbg (keyword (str (name fk) "_2"))))))))
 
 (defn with* [query sub-ent func]
   (let [rel (get-rel (:ent query) sub-ent)
@@ -750,25 +743,6 @@
                             ~@body))))
 
 ;;*****************************************************
-;; Postgres Schemas
-;;*****************************************************
-
-(defn- set-pg-schema
-  "Creates a entity with proper table name in a postgres schema"
-  [{tb :table sc :schema :as ent}]
-  (let [schema (if *pg-schema* *pg-schema* sc)]
-    (table ent (if schema (keyword (str (name schema) "." tb)) tb))))
-
-(defn pg-schema [ent schema]
-  (assoc ent :schema schema))
-
-(defmacro with-pg-schema
-  "Binds postgres schema for tables in this scope."
-  [schema & body]
-  `(binding [*pg-schema* ~schema]
-     ~@body))
-
-;;*****************************************************
 ;; Other
 ;;*****************************************************
 
@@ -807,7 +781,7 @@
                   id (pk (insert-or-update-with-rels ent (rels-map k)))]
               [fk id]))
           one-rels))
-    rels-map))
+    (select-keys rels-map (keys one-rels))))
 
 (defn- get-rels
   [{:keys [rel]} type]
@@ -853,3 +827,15 @@
        (if valid?
          (create recs)
          (korma.db/rollback))))))
+
+
+;;*****************************************************
+;; Postgres Schemas
+;;*****************************************************
+
+(defmacro with-pg-schema
+  "Binds postgres schema for tables in this scope."
+  [schema & body]
+  `(do
+     (exec-raw ~[(str "SET search_path TO " (name schema) ";")])
+     ~@body))
