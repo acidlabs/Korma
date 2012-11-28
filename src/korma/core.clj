@@ -799,7 +799,7 @@
   (let [many-rels  (get-rels ent :has-many)
         one-rels   (get-rels ent :belongs-to)
         query      (if (id record)
-                     #(update ent (set-fields (dbg %)) (where {id (id %)}))
+                     #(update ent (set-fields %) (where {id (id %)}))
                      #(insert ent (values %)))
         rels-keys  (concat (keys many-rels) (keys one-rels))
         new-record (query
