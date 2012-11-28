@@ -780,8 +780,8 @@
             (let [[pk fk ent] (rel-values rel)
                   id (pk (insert-or-update-with-rels ent (rels-map k)))]
               [fk id]))
-          one-rels))
-    (select-keys rels-map (keys one-rels))))
+          (select-keys one-rels (keys rels-map))))
+    one-rels))
 
 (defn- get-rels
   [{:keys [rel]} type]
@@ -799,7 +799,7 @@
   (let [many-rels  (get-rels ent :has-many)
         one-rels   (get-rels ent :belongs-to)
         query      (if (id record)
-                     #(update ent (set-fields %) (where {id (id %)}))
+                     #(update ent (set-fields (dbg %)) (where {id (id %)}))
                      #(insert ent (values %)))
         rels-keys  (concat (keys many-rels) (keys one-rels))
         new-record (query
