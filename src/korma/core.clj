@@ -837,5 +837,5 @@
   "Binds postgres schema for tables in this scope."
   [schema & body]
   `(do
-     (exec-raw ~[(str "SET search_path TO " (name schema) ";")])
+     (exec-raw [(str "SET search_path TO " (name ~schema) ";")])
      ~@body))
