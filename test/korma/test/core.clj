@@ -21,7 +21,7 @@
 
 (defentity user2
   (table :users)
-  (has-one address)
+  (belongs-to address)
   (has-many email))
 
 (defentity users-alias
@@ -39,6 +39,11 @@
            (as-sql))
          "SELECT \"users\".\"id\", \"users\".\"username\" FROM \"users\" WHERE (\"users\".\"username\" = ?) ORDER BY \"users\".\"created\" ASC LIMIT 5 OFFSET 3")))
 
+
+(dry-run
+ (save user2
+       {:name "sdf"
+        :address {:street "sdfds"}}))
 
 (deftest simple-selects
   (sql-only

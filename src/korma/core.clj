@@ -431,8 +431,8 @@
    (let [d-fk (keyword (str (:table ent) "_id"))
          d-sub-fk (keyword (str (:table sub-ent) "_id"))
          d-map-table (condp = type
-                       :has-many-to-many (str (:table ent) "2" (:table sub-ent))
-                       :belongs-to-many-to-many (str (:table sub-ent) "2" (:table ent)))
+                       :has-many-to-many (str (:table ent) "_" (:table sub-ent))
+                       :belongs-to-many-to-many (str (:table sub-ent) "_" (:table ent)))
          opts (merge {:fk d-fk
                       :sub-fk d-sub-fk
                       :map-table d-map-table}
@@ -769,6 +769,18 @@
       (doseq [record (map (fn [val] (assoc val fk (pk rels-map))) (rels-map k))]
         (insert-or-update-with-rels ent record)))))
 
+(defn- insert-or-update-many-to-many-rels
+  [many-rels rels-map]
+  (doseq [[k rel] many-rels]
+    (let [[pk fk ent] (rel-values rel)
+          sub-fk      (get-key rel :sub-fk)
+          sub-pk      (get-key rel :sub-pk)]
+      (doseq [record (rels-map k)]
+        (let [new-val (insert-or-update-with-rels (:ent rel) record)]
+          (insert (:map-table rel)
+                  (values {fk (pk rels-map)
+                           sub-fk (sub-pk new-val)})))))))
+
 (defn- insert-or-update-one-rels
   [one-rels rels-map]
   (if one-rels
@@ -796,17 +808,22 @@
 (defn insert-or-update-with-rels
   "Inserts a single value with its relationships."
   [{id :pk rel :rel :as ent} record]
-  (let [many-rels  (get-rels ent :has-many)
-        one-rels   (get-rels ent :belongs-to)
-        query      (if (id record)
-                     #(update ent (set-fields %) (where {id (id %)}))
-                     #(insert ent (values %)))
-        rels-keys  (concat (keys many-rels) (keys one-rels))
-        new-record (query
-                    (apply dissoc
-                           (insert-or-update-one-rels one-rels record)
-                           rels-keys))]
+  (let [many-rels         (get-rels ent :has-many)
+        many-to-many-rels (get-rels ent :has-many-to-many)
+        one-rels          (get-rels ent :belongs-to)
+        query             (if (id record)
+                            #(update ent (set-fields %) (where {id (id %)}))
+                            #(do
+                               (prn %)
+                               (insert ent (values %))))
+        rels-keys         (concat (keys many-rels) (keys one-rels) (keys many-to-many-rels))
+        new-record        (query
+                           (apply dissoc
+                                  (insert-or-update-one-rels one-rels record)
+                                  rels-keys))]
     (insert-or-update-many-rels many-rels
+                                (assoc record id (id new-record)))
+    (insert-or-update-many-to-many-rels many-to-many-rels
                                 (assoc record id (id new-record)))
     new-record))
 
