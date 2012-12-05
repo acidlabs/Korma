@@ -813,9 +813,7 @@
         one-rels          (get-rels ent :belongs-to)
         query             (if (id record)
                             #(update ent (set-fields %) (where {id (id %)}))
-                            #(do
-                               (prn %)
-                               (insert ent (values %))))
+                            #(insert ent (values %)))
         rels-keys         (concat (keys many-rels) (keys one-rels) (keys many-to-many-rels))
         new-record        (query
                            (apply dissoc
