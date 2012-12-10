@@ -848,9 +848,7 @@
 ;; Postgres Schemas
 ;;*****************************************************
 
-(defmacro with-pg-schema
+(defn pg-schema
   "Binds postgres schema for tables in this scope."
-  [schema & body]
-  `(do
-     (exec-raw [(str "SET search_path TO " (name ~schema) ";")])
-     ~@body))
+  [schema]
+  (exec-raw [(str "SET search_path TO " (name schema) ",public;")]))
